@@ -350,13 +350,60 @@ let cYear  = new Date().getFullYear();
 let txFilter = 'all';
 let chartAlloc, chartDaily, chartSave;
 
-// ─── STORAGE ─────────────────────────────────────────────────
-const KEY = 'razan_dompet_v1';
-function load() {
-  try { return JSON.parse(localStorage.getItem(KEY)) || def(); } catch { return def(); }
-}
+// ─── CONFIG: GANTI API KEY & BIN ID DI SINI ──────────────────
+const JSONBIN_API_KEY = '$2a$10$isgthJs1PPjISW5hcqjo2eRLj/Wi4eu3eyNugSmAuguMvfbyBBDcS';
+const JSONBIN_BIN_ID  = '';  // kosong dulu, otomatis keisi pas pertama kali
+// ─────────────────────────────────────────────────────────────
+
+const LOCAL_KEY = 'razan_dompet_v1';
+const BIN_ID_KEY = 'razan_bin_id';
+
 function def() { return { txs: [], savings: {}, settings: { rt: '21:00', re: false } }; }
-function save(d) { localStorage.setItem(KEY, JSON.stringify(d)); }
+
+// Load dari JSONBin, fallback ke localStorage kalau offline
+async function load() {
+  const binId = JSONBIN_BIN_ID || localStorage.getItem(BIN_ID_KEY);
+  if (!binId || !JSONBIN_API_KEY || JSONBIN_API_KEY === '$2a$10$isgthJs1PPjISW5hcqjo2eRLj/Wi4eu3eyNugSmAuguMvfbyBBDcS') {
+    try { return JSON.parse(localStorage.getItem(LOCAL_KEY)) || def(); } catch { return def(); }
+  }
+  try {
+    const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}/latest`, {
+      headers: { 'X-Master-Key': JSONBIN_API_KEY }
+    });
+    const json = await res.json();
+    const d = json.record || def();
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(d)); // cache lokal
+    return d;
+  } catch {
+    try { return JSON.parse(localStorage.getItem(LOCAL_KEY)) || def(); } catch { return def(); }
+  }
+}
+
+// Simpan ke JSONBin, otomatis buat bin baru kalau belum ada
+async function save(d) {
+  localStorage.setItem(LOCAL_KEY, JSON.stringify(d)); // selalu simpan lokal dulu
+  if (!JSONBIN_API_KEY || JSONBIN_API_KEY === 'ISI_API_KEY_LU_DI_SINI') return;
+  let binId = JSONBIN_BIN_ID || localStorage.getItem(BIN_ID_KEY);
+  try {
+    if (!binId) {
+      // Buat bin baru
+      const res = await fetch('https://api.jsonbin.io/v3/b', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'X-Master-Key': JSONBIN_API_KEY, 'X-Bin-Name': 'keuangan-razan', 'X-Bin-Private': 'true' },
+        body: JSON.stringify(d)
+      });
+      const json = await res.json();
+      binId = json.metadata?.id;
+      if (binId) localStorage.setItem(BIN_ID_KEY, binId);
+    } else {
+      await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json', 'X-Master-Key': JSONBIN_API_KEY },
+        body: JSON.stringify(d)
+      });
+    }
+  } catch { /* simpan lokal sudah cukup kalau offline */ }
+}
 
 // ─── UTILS ───────────────────────────────────────────────────
 function fmt(n) { return 'Rp' + Math.round(n).toLocaleString('id-ID'); }
@@ -368,9 +415,10 @@ function fmtShort(n) {
 function mKey(y, m) { return `${y}-${String(m+1).padStart(2,'0')}`; }
 function mLabel(y, m) { return new Date(y, m, 1).toLocaleDateString('id-ID', { month: 'long', year: 'numeric' }); }
 function mShort(y, m) { return new Date(y, m, 1).toLocaleDateString('id-ID', { month: 'short', year: '2-digit' }); }
-function monthTxs(y, m) {
+async function monthTxs(y, m) {
   const k = mKey(y, m);
-  return load().txs.filter(tx => tx.date.startsWith(k));
+  const d = await load();
+  return d.txs.filter(tx => tx.date.startsWith(k));
 }
 function toast(msg) {
   const t = document.getElementById('toast');
@@ -398,21 +446,21 @@ function changeMonth(d) {
 }
 
 // ─── INIT ────────────────────────────────────────────────────
-function init() {
+async function init() {
   const now = new Date();
   document.getElementById('hdr-date').textContent = now.toLocaleDateString('id-ID', { weekday:'long', day:'numeric', month:'long', year:'numeric' });
   document.getElementById('month-label').textContent = mLabel(cYear, cMonth);
   document.getElementById('inp-date').value = now.toISOString().split('T')[0];
   updateCats();
-  renderHome();
-  renderNabung();
+  await renderHome();
+  await renderNabung();
   renderSettings();
   startReminderCheck();
 }
 
 // ─── HOME ────────────────────────────────────────────────────
-function renderHome() {
-  const txs = monthTxs(cYear, cMonth);
+async function renderHome() {
+  const txs = await monthTxs(cYear, cMonth);
   const spent = { SeaBank: 0, GoPay: 0 };
   txs.forEach(tx => { if (spent[tx.acc] !== undefined) spent[tx.acc] += tx.amount; });
   const totalSpent = spent.SeaBank + spent.GoPay;
@@ -521,7 +569,7 @@ function pickCat(btn, cat) {
 }
 
 // ─── SAVE TX ─────────────────────────────────────────────────
-function saveTx() {
+async function saveTx() {
   const date   = document.getElementById('inp-date').value;
   const acc    = document.getElementById('inp-acc').value;
   const cat    = document.getElementById('inp-cat').value.trim();
@@ -533,9 +581,9 @@ function saveTx() {
     return;
   }
 
-  const d = load();
+  const d = await load();
   d.txs.push({ id: Date.now(), date, acc, cat, amount, note, at: new Date().toISOString() });
-  save(d);
+  await save(d);
 
   document.getElementById('inp-amount').value = '';
   document.getElementById('inp-note').value = '';
@@ -543,7 +591,7 @@ function saveTx() {
   document.querySelectorAll('.cat-btn').forEach(b => b.classList.remove('active'));
 
   toast('✓ Pengeluaran disimpan');
-  renderHome();
+  await renderHome();
 }
 
 // ─── TX LIST ─────────────────────────────────────────────────
@@ -553,8 +601,8 @@ function setFilter(f, btn) {
   btn.classList.add('active');
   renderTxList();
 }
-function renderTxList() {
-  const d = load();
+async function renderTxList() {
+  const d = await load();
   const k = mKey(cYear, cMonth);
   let txs = d.txs.filter(tx => tx.date.startsWith(k));
   if (txFilter !== 'all') txs = txs.filter(tx => tx.acc === txFilter);
@@ -581,18 +629,18 @@ function renderTxList() {
     </div>`;
   }).join('');
 }
-function delTx(id) {
-  const d = load();
+async function delTx(id) {
+  const d = await load();
   d.txs = d.txs.filter(tx => tx.id !== id);
-  save(d);
-  renderTxList();
-  renderHome();
+  await save(d);
+  await renderTxList();
+  await renderHome();
   toast('Transaksi dihapus');
 }
 
 // ─── NABUNG ──────────────────────────────────────────────────
-function renderNabung() {
-  const d = load();
+async function renderNabung() {
+  const d = await load();
   const savings = d.savings || {};
   const months = [];
   for (let i = 5; i >= 0; i--) {
@@ -633,18 +681,18 @@ function renderNabung() {
     </div>`
   ).join('');
 }
-function recordSaving(key, val) {
-  const d = load();
+async function recordSaving(key, val) {
+  const d = await load();
   if (!d.savings) d.savings = {};
   d.savings[key] = parseInt(val) || 0;
-  save(d);
-  renderNabung();
+  await save(d);
+  await renderNabung();
   toast('✓ Tabungan dicatat');
 }
 
 // ─── SETTINGS ────────────────────────────────────────────────
-function renderSettings() {
-  const d = load();
+async function renderSettings() {
+  const d = await load();
   const s = d.settings || {};
   document.getElementById('tog-notif').checked = !!s.re;
   document.getElementById('inp-reminder').value = s.rt || '21:00';
@@ -654,25 +702,24 @@ function renderSettings() {
   const diff = Math.ceil((ng - today) / 86400000);
   document.getElementById('next-gajian').textContent = `${ng.toLocaleDateString('id-ID',{day:'numeric',month:'long'})} — ${diff} hari lagi`;
 }
-function saveReminder(val) {
-  const d = load(); if (!d.settings) d.settings = {};
-  d.settings.rt = val; save(d);
+async function saveReminder(val) {
+  const d = await load(); if (!d.settings) d.settings = {};
+  d.settings.rt = val; await save(d);
 }
 function toggleNotif(on) {
   if (on) {
-    Notification.requestPermission().then(p => {
-      const d = load(); if (!d.settings) d.settings = {};
-      if (p === 'granted') { d.settings.re = true; save(d); toast('✓ Reminder aktif'); }
+    Notification.requestPermission().then(async p => {
+      const d = await load(); if (!d.settings) d.settings = {};
+      if (p === 'granted') { d.settings.re = true; await save(d); toast('✓ Reminder aktif'); }
       else { document.getElementById('tog-notif').checked = false; toast('Izinkan notifikasi di browser dulu'); }
     });
   } else {
-    const d = load(); if (!d.settings) d.settings = {};
-    d.settings.re = false; save(d);
+    load().then(async d => { if (!d.settings) d.settings = {}; d.settings.re = false; await save(d); });
   }
 }
 function startReminderCheck() {
-  setInterval(() => {
-    const d = load(); const s = d.settings || {};
+  setInterval(async () => {
+    const d = await load(); const s = d.settings || {};
     if (!s.re || Notification.permission !== 'granted') return;
     const now = new Date();
     const [h, m] = (s.rt || '21:00').split(':').map(Number);
@@ -683,8 +730,8 @@ function startReminderCheck() {
 }
 
 // ─── EXPORT CSV ──────────────────────────────────────────────
-function exportCSV() {
-  const d = load();
+async function exportCSV() {
+  const d = await load();
   if (!d.txs.length) { toast('Belum ada data'); return; }
   const rows = [['Tanggal','Rekening','Kategori','Nominal','Keterangan']];
   d.txs.sort((a,b) => a.date.localeCompare(b.date)).forEach(tx => {
@@ -702,10 +749,11 @@ function exportCSV() {
 }
 
 // ─── CLEAR ───────────────────────────────────────────────────
-function clearAll() {
+async function clearAll() {
   if (confirm('Yakin mau hapus semua data? Ini gak bisa di-undo.')) {
-    localStorage.removeItem(KEY);
-    renderHome(); renderTxList(); renderNabung();
+    localStorage.removeItem(LOCAL_KEY);
+    localStorage.removeItem(BIN_ID_KEY);
+    await renderHome(); await renderTxList(); await renderNabung();
     toast('Data dihapus');
   }
 }
