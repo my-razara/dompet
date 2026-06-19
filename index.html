@@ -303,17 +303,7 @@
 
     <div class="card">
       <div class="card-title">Koneksi Google Sheets</div>
-      <div id="cloud-status" style="font-size:12px;margin-bottom:10px;padding:7px 10px;border-radius:8px;background:var(--gray-l);color:var(--gray)">⚪ Belum terhubung</div>
-      <div class="form-group" style="margin-bottom:10px">
-        <label class="form-label">Web App URL</label>
-        <input type="text" class="form-input" id="inp-gsurl" placeholder="https://script.google.com/macros/s/..." style="font-size:11px;font-family:monospace">
-      </div>
-      <div class="form-group" style="margin-bottom:10px">
-        <label class="form-label">Secret Key</label>
-        <input type="password" class="form-input" id="inp-skey" placeholder="Secret key yang lu set di Apps Script">
-      </div>
-      <button class="btn-primary" onclick="connectCloud()">Hubungkan ke Sheets</button>
-      <button class="btn-danger" onclick="disconnectCloud()" style="margin-top:8px">Putus Koneksi</button>
+      <div style="font-size:12px;padding:7px 10px;border-radius:8px;background:var(--teal-l);color:var(--teal)">✓ Terhubung — data otomatis tersimpan ke Sheets</div>
     </div>
 
     <div class="card">
@@ -369,12 +359,12 @@ let cYear  = new Date().getFullYear();
 let txFilter = 'all';
 let chartAlloc, chartDaily, chartSave;
 
-// ─── CONFIG (diatur dari dalam app, tab Pengaturan) ───────────
-const LOCAL_KEY   = 'razan_dompet_v1';
-const GS_URL_KEY  = 'razan_gs_url';
-const GS_SKEY_KEY = 'razan_gs_skey';
-function getGsUrl()  { return localStorage.getItem(GS_URL_KEY)  || ''; }
-function getGsSkey() { return localStorage.getItem(GS_SKEY_KEY) || ''; }
+// ─── CONFIG ───────────────────────────────────────────────────
+const LOCAL_KEY = 'razan_dompet_v1';
+const GS_URL    = 'https://script.google.com/macros/s/AKfycbzLjVJHq_wIAXnTrJ07h1ET_-_RAw_gFte8TyhpNdc3ftmQh0_jMbfAtkPZArqhES3S/exec';
+const GS_SKEY   = 'razan123';
+function getGsUrl()  { return GS_URL; }
+function getGsSkey() { return GS_SKEY; }
 // ─────────────────────────────────────────────────────────────
 
 function def() { return { txs: [], savings: {}, settings: { rt: '21:00', re: false } }; }
@@ -723,52 +713,8 @@ async function renderSettings() {
   if (today.getDate() >= 26) ng = new Date(today.getFullYear(), today.getMonth() + 1, 26);
   const diff = Math.ceil((ng - today) / 86400000);
   document.getElementById('next-gajian').textContent = `${ng.toLocaleDateString('id-ID',{day:'numeric',month:'long'})} — ${diff} hari lagi`;
-  updateCloudStatus();
 }
-function updateCloudStatus() {
-  const el = document.getElementById('cloud-status');
-  if (!el) return;
-  const url  = getGsUrl();
-  const skey = getGsSkey();
-  if (url && skey) {
-    el.style.background = 'var(--teal-l)'; el.style.color = 'var(--teal)';
-    el.textContent = '✓ Terhubung ke Google Sheets';
-  } else {
-    el.style.background = 'var(--gray-l)'; el.style.color = 'var(--gray)';
-    el.textContent = '⚪ Belum terhubung — data hanya tersimpan lokal';
-  }
-  const urlInp  = document.getElementById('inp-gsurl');
-  const skeyInp = document.getElementById('inp-skey');
-  if (urlInp && url)   urlInp.value  = url;
-  if (skeyInp && skey) skeyInp.value = skey;
-}
-async function connectCloud() {
-  const url  = document.getElementById('inp-gsurl').value.trim();
-  const skey = document.getElementById('inp-skey').value.trim();
-  if (!url || !skey) { toast('Isi Web App URL dan Secret Key dulu'); return; }
-  toast('Mencoba koneksi...');
-  try {
-    const res = await fetch(`${url}?key=${encodeURIComponent(skey)}`);
-    const json = await res.json();
-    if (json.error === 'Unauthorized') { toast('❌ Secret key salah'); return; }
-    localStorage.setItem(GS_URL_KEY,  url);
-    localStorage.setItem(GS_SKEY_KEY, skey);
-    // Sync data lokal yang ada ke Sheets
-    const d = await load();
-    for (const tx of d.txs) await gsPost('saveTx', { data: tx });
-    toast('✓ Terhubung ke Google Sheets!');
-    updateCloudStatus();
-  } catch {
-    toast('❌ Gagal konek — cek URL dan internet');
-  }
-}
-function disconnectCloud() {
-  if (!confirm('Putus koneksi? Data lokal tetap aman.')) return;
-  localStorage.removeItem(GS_URL_KEY);
-  localStorage.removeItem(GS_SKEY_KEY);
-  updateCloudStatus();
-  toast('Koneksi diputus');
-}
+function updateCloudStatus() {}
 async function saveReminder(val) {
   const d = await load(); if (!d.settings) d.settings = {};
   d.settings.rt = val; await save(d);
@@ -792,7 +738,7 @@ function startReminderCheck() {
     const now = new Date();
     const [h, m] = (s.rt || '21:00').split(':').map(Number);
     if (now.getHours() === h && now.getMinutes() === m) {
-      new Notification('Keuangan Razan', { body: 'Jangan lupa catat pengeluaran hari ini ya!' });
+      new Notification('Keuangan Razan 💰', { body: 'Jangan lupa catat pengeluaran hari ini ya!' });
     }
   }, 60000);
 }
@@ -820,8 +766,6 @@ async function exportCSV() {
 async function clearAll() {
   if (confirm('Yakin mau hapus semua data? Ini gak bisa di-undo.')) {
     localStorage.removeItem(LOCAL_KEY);
-    localStorage.removeItem(GS_URL_KEY);
-    localStorage.removeItem(GS_SKEY_KEY);
     await renderHome(); await renderTxList(); await renderNabung();
     toast('Data dihapus');
   }
