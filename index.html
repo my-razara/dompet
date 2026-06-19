@@ -302,13 +302,17 @@
     </div>
 
     <div class="card">
-      <div class="card-title">Koneksi Cloud (JSONBin)</div>
-      <div id="cloud-status" style="font-size:12px;margin-bottom:10px;padding:7px 10px;border-radius:8px;background:var(--gray-l);color:var(--gray)">⏳ Belum terhubung</div>
-      <div class="form-group" style="margin-bottom:8px">
-        <label class="form-label">API Key JSONBin</label>
-        <input type="password" class="form-input" id="inp-apikey" placeholder="Paste API key lu di sini..." style="font-size:12px;font-family:monospace">
+      <div class="card-title">Koneksi Google Sheets</div>
+      <div id="cloud-status" style="font-size:12px;margin-bottom:10px;padding:7px 10px;border-radius:8px;background:var(--gray-l);color:var(--gray)">⚪ Belum terhubung</div>
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="form-label">Web App URL</label>
+        <input type="text" class="form-input" id="inp-gsurl" placeholder="https://script.google.com/macros/s/..." style="font-size:11px;font-family:monospace">
       </div>
-      <button class="btn-primary" onclick="connectCloud()" style="margin-bottom:0">Hubungkan ke Cloud</button>
+      <div class="form-group" style="margin-bottom:10px">
+        <label class="form-label">Secret Key</label>
+        <input type="password" class="form-input" id="inp-skey" placeholder="Secret key yang lu set di Apps Script">
+      </div>
+      <button class="btn-primary" onclick="connectCloud()">Hubungkan ke Sheets</button>
       <button class="btn-danger" onclick="disconnectCloud()" style="margin-top:8px">Putus Koneksi</button>
     </div>
 
@@ -366,29 +370,27 @@ let txFilter = 'all';
 let chartAlloc, chartDaily, chartSave;
 
 // ─── CONFIG (diatur dari dalam app, tab Pengaturan) ───────────
-const LOCAL_KEY  = 'razan_dompet_v1';
-const BIN_ID_KEY = 'razan_bin_id';
-const API_KEY_ST = 'razan_api_key';
-function getApiKey()  { return localStorage.getItem(API_KEY_ST) || ''; }
-function getBinId()   { return localStorage.getItem(BIN_ID_KEY) || ''; }
+const LOCAL_KEY   = 'razan_dompet_v1';
+const GS_URL_KEY  = 'razan_gs_url';
+const GS_SKEY_KEY = 'razan_gs_skey';
+function getGsUrl()  { return localStorage.getItem(GS_URL_KEY)  || ''; }
+function getGsSkey() { return localStorage.getItem(GS_SKEY_KEY) || ''; }
 // ─────────────────────────────────────────────────────────────
 
 function def() { return { txs: [], savings: {}, settings: { rt: '21:00', re: false } }; }
 
-// Load dari JSONBin, fallback ke localStorage kalau offline
+// Load dari Google Sheets, fallback ke localStorage kalau offline
 async function load() {
-  const apiKey = getApiKey();
-  const binId  = getBinId();
-  if (!apiKey || !binId) {
+  const url  = getGsUrl();
+  const skey = getGsSkey();
+  if (!url || !skey) {
     try { return JSON.parse(localStorage.getItem(LOCAL_KEY)) || def(); } catch { return def(); }
   }
   try {
-    const res = await fetch(`https://api.jsonbin.io/v3/b/${binId}/latest`, {
-      headers: { 'X-Master-Key': apiKey }
-    });
+    const res = await fetch(`${url}?key=${encodeURIComponent(skey)}`);
     if (!res.ok) throw new Error('fetch failed');
-    const json = await res.json();
-    const d = json.record || def();
+    const d = await res.json();
+    if (d.error) throw new Error(d.error);
     localStorage.setItem(LOCAL_KEY, JSON.stringify(d));
     return d;
   } catch {
@@ -396,31 +398,29 @@ async function load() {
   }
 }
 
-// Simpan ke JSONBin, otomatis buat bin baru kalau belum ada
+// Helper: kirim action ke Apps Script
+async function gsPost(action, extra = {}) {
+  const url  = getGsUrl();
+  const skey = getGsSkey();
+  if (!url || !skey) return;
+  try {
+    await fetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ key: skey, action, ...extra }),
+    });
+  } catch { /* offline */ }
+}
+
+// Simpan data ke localStorage (selalu) + sync ke Sheets
 async function save(d) {
   localStorage.setItem(LOCAL_KEY, JSON.stringify(d));
-  const apiKey = getApiKey();
-  if (!apiKey) return;
-  let binId = getBinId();
-  try {
-    if (!binId) {
-      const res = await fetch('https://api.jsonbin.io/v3/b', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json', 'X-Master-Key': apiKey, 'X-Bin-Name': 'keuangan-razan', 'X-Bin-Private': 'true' },
-        body: JSON.stringify(d)
-      });
-      const json = await res.json();
-      binId = json.metadata?.id;
-      if (binId) localStorage.setItem(BIN_ID_KEY, binId);
-    } else {
-      await fetch(`https://api.jsonbin.io/v3/b/${binId}`, {
-        method: 'PUT',
-        headers: { 'Content-Type': 'application/json', 'X-Master-Key': apiKey },
-        body: JSON.stringify(d)
-      });
-    }
-  } catch { /* offline, data aman di localStorage */ }
 }
+
+// Aksi spesifik ke Sheets
+async function syncTx(tx)         { await gsPost('saveTx', { data: tx }); }
+async function syncDelTx(id)      { await gsPost('deleteTx', { id }); }
+async function syncSaving(month, amount) { await gsPost('saveSaving', { month, amount }); }
+async function syncSettings(s)    { await gsPost('saveSettings', { data: s }); }
 
 // ─── UTILS ───────────────────────────────────────────────────
 function fmt(n) { return 'Rp' + Math.round(n).toLocaleString('id-ID'); }
@@ -599,8 +599,10 @@ async function saveTx() {
   }
 
   const d = await load();
-  d.txs.push({ id: Date.now(), date, acc, cat, amount, note, at: new Date().toISOString() });
+  const newTx = { id: Date.now(), date, acc, cat, amount, note, at: new Date().toISOString() };
+  d.txs.push(newTx);
   await save(d);
+  syncTx(newTx);
 
   document.getElementById('inp-amount').value = '';
   document.getElementById('inp-note').value = '';
@@ -650,6 +652,7 @@ async function delTx(id) {
   const d = await load();
   d.txs = d.txs.filter(tx => tx.id !== id);
   await save(d);
+  syncDelTx(id);
   await renderTxList();
   await renderHome();
   toast('Transaksi dihapus');
@@ -701,8 +704,10 @@ async function renderNabung() {
 async function recordSaving(key, val) {
   const d = await load();
   if (!d.savings) d.savings = {};
-  d.savings[key] = parseInt(val) || 0;
+  const amt = parseInt(val) || 0;
+  d.savings[key] = amt;
   await save(d);
+  syncSaving(key, amt);
   await renderNabung();
   toast('✓ Tabungan dicatat');
 }
@@ -723,52 +728,51 @@ async function renderSettings() {
 function updateCloudStatus() {
   const el = document.getElementById('cloud-status');
   if (!el) return;
-  const apiKey = getApiKey();
-  const binId  = getBinId();
-  if (apiKey && binId) {
+  const url  = getGsUrl();
+  const skey = getGsSkey();
+  if (url && skey) {
     el.style.background = 'var(--teal-l)'; el.style.color = 'var(--teal)';
-    el.textContent = '✓ Terhubung — data tersimpan di cloud';
-  } else if (apiKey && !binId) {
-    el.style.background = 'var(--amber-l)'; el.style.color = 'var(--amber)';
-    el.textContent = '⏳ API key tersimpan, menunggu data pertama...';
+    el.textContent = '✓ Terhubung ke Google Sheets';
   } else {
     el.style.background = 'var(--gray-l)'; el.style.color = 'var(--gray)';
     el.textContent = '⚪ Belum terhubung — data hanya tersimpan lokal';
   }
-  const inp = document.getElementById('inp-apikey');
-  if (inp && apiKey) inp.value = apiKey;
+  const urlInp  = document.getElementById('inp-gsurl');
+  const skeyInp = document.getElementById('inp-skey');
+  if (urlInp && url)   urlInp.value  = url;
+  if (skeyInp && skey) skeyInp.value = skey;
 }
 async function connectCloud() {
-  const key = document.getElementById('inp-apikey').value.trim();
-  if (!key) { toast('Isi API key dulu ya'); return; }
-  // Test koneksi
+  const url  = document.getElementById('inp-gsurl').value.trim();
+  const skey = document.getElementById('inp-skey').value.trim();
+  if (!url || !skey) { toast('Isi Web App URL dan Secret Key dulu'); return; }
   toast('Mencoba koneksi...');
   try {
-    const res = await fetch('https://api.jsonbin.io/v3/b?page=1', {
-      headers: { 'X-Master-Key': key }
-    });
-    if (res.status === 401) { toast('❌ API key salah, cek lagi'); return; }
-    localStorage.setItem(API_KEY_ST, key);
-    updateCloudStatus();
-    // Langsung sync data yang ada ke cloud
+    const res = await fetch(`${url}?key=${encodeURIComponent(skey)}`);
+    const json = await res.json();
+    if (json.error === 'Unauthorized') { toast('❌ Secret key salah'); return; }
+    localStorage.setItem(GS_URL_KEY,  url);
+    localStorage.setItem(GS_SKEY_KEY, skey);
+    // Sync data lokal yang ada ke Sheets
     const d = await load();
-    await save(d);
-    toast('✓ Berhasil terhubung ke cloud!');
+    for (const tx of d.txs) await gsPost('saveTx', { data: tx });
+    toast('✓ Terhubung ke Google Sheets!');
     updateCloudStatus();
   } catch {
-    toast('❌ Gagal konek, cek internet lu');
+    toast('❌ Gagal konek — cek URL dan internet');
   }
 }
 function disconnectCloud() {
-  if (!confirm('Putus koneksi cloud? Data lokal tetap aman.')) return;
-  localStorage.removeItem(API_KEY_ST);
-  localStorage.removeItem(BIN_ID_KEY);
+  if (!confirm('Putus koneksi? Data lokal tetap aman.')) return;
+  localStorage.removeItem(GS_URL_KEY);
+  localStorage.removeItem(GS_SKEY_KEY);
   updateCloudStatus();
-  toast('Koneksi cloud diputus');
+  toast('Koneksi diputus');
 }
 async function saveReminder(val) {
   const d = await load(); if (!d.settings) d.settings = {};
   d.settings.rt = val; await save(d);
+  syncSettings(d.settings);
 }
 function toggleNotif(on) {
   if (on) {
@@ -788,7 +792,7 @@ function startReminderCheck() {
     const now = new Date();
     const [h, m] = (s.rt || '21:00').split(':').map(Number);
     if (now.getHours() === h && now.getMinutes() === m) {
-      new Notification('Keuangan Razan 💰', { body: 'Jangan lupa catat pengeluaran hari ini ya!' });
+      new Notification('Keuangan Razan', { body: 'Jangan lupa catat pengeluaran hari ini ya!' });
     }
   }, 60000);
 }
@@ -816,7 +820,8 @@ async function exportCSV() {
 async function clearAll() {
   if (confirm('Yakin mau hapus semua data? Ini gak bisa di-undo.')) {
     localStorage.removeItem(LOCAL_KEY);
-    localStorage.removeItem(BIN_ID_KEY);
+    localStorage.removeItem(GS_URL_KEY);
+    localStorage.removeItem(GS_SKEY_KEY);
     await renderHome(); await renderTxList(); await renderNabung();
     toast('Data dihapus');
   }
